@@ -1,6 +1,7 @@
 from FART import FART, LidarDir, Directions
 from enum import Enum
 from math import copysign
+from time import sleep
 
 
 SQUARE_SIZE = 28
@@ -133,7 +134,7 @@ def next_node():
 
 
 # Main Program
-with FART(motor_port="", motor_baud_rate="", motor_left=0, motor_right=1, lidar_port="") as Fart:
+with FART(motor_port="/dev/ttyACM0", motor_baud_rate=115200, motor_left=0, motor_right=1, lidar_port="/dev/ttyACM1", lidar_offset=[3.1,1.7,1.8,2.4,1,2.4,1.8,2.3]) as Fart: 
     # initialise variables
     unexplored_nodes = []
     connections = {}
@@ -148,6 +149,7 @@ with FART(motor_port="", motor_baud_rate="", motor_left=0, motor_right=1, lidar_
 
     # High level loop
     while True:
+		Fart.read_lidar()
         if search_state == SearchStates.SEARCH_NODE:
             pass
         elif search_state == SearchStates.DISCOVER_NODES:
