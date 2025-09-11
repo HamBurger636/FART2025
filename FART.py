@@ -6,6 +6,13 @@ from time import time
 LIDAR_READ_INTERVAL = 100
 
 
+class Directions(Enum):
+    NORTH = 0,
+    EAST = 1,
+    SOUTH = 2,
+    WEST = 3
+
+
 class LidarDir(Enum):
     FRONT = 0
     FRONT_RIGHT = 1
