@@ -36,6 +36,9 @@ serial_connection = Connection(port="/dev/ttyACM0", baudrate=1000000)
 left_motor_id = 15
 right_motor_id = 18
 
+# servos speed
+motor_speed = 300
+
 # Enable torque
 serial_connection.write_data(left_motor_id, 24, [1])
 serial_connection.write_data(right_motor_id, 24, [1])
@@ -44,7 +47,10 @@ serial_connection.write_data(right_motor_id, 24, [1])
 imu = ICM20948()
 
 # Axis indices
-X, Y, Z = 0, 1, 2
+X = 0
+Y = 1
+Z = 2
+
 AXES = X, Y
 
 # Function to control a wheel
@@ -60,26 +66,26 @@ def stop_motor(motor_id):
     serial_connection.write_data(motor_id, 32, [0, 0])
 
 def forwards():
-	wheel(left_motor_id, 300, "cw")
-    wheel(right_motor_id, 300, "ccw")
+	wheel(left_motor_id, motor_speed, "cw")
+	wheel(right_motor_id, motor_speed, "ccw")
 
 def backwards():
-	wheel(left_motor_id, 300, "ccw")
-    wheel(right_motor_id, 300, "cw")
+	wheel(left_motor_id, motor_speed, "ccw")
+	wheel(right_motor_id, motor_speed, "cw")
 
 # Turn towards a target angle
 def turn(target_angle, heading):
     diff = (target_angle - heading + 360) % 360  
     if diff > 180:
         # Turn CCW
-        wheel(left_motor_id, 300, "ccw")
-        wheel(right_motor_id, 300, "ccw")
+        wheel(left_motor_id, motor_speed, "ccw")
+        wheel(right_motor_id, motor_speed, "ccw")
     else:
         # Turn CW
-        wheel(left_motor_id, 300, "cw")
-        wheel(right_motor_id, 300, "cw")
+        wheel(left_motor_id, motor_speed, "cw")
+        wheel(right_motor_id, motor_speed, "cw")
 
-target_angle = 90  
+target_angle = 180
 
 def read_lidar():
 	lidar.flushInput()
@@ -93,7 +99,9 @@ def read_lidar():
 		idx = i*2 + 2
 		dist = ((lidar_response[idx] << 8) + lidar_response[idx+1])/10 - lidar_offset[i]
 		distances.append(dist)
-	return distances 
+	for i in range(len(distances)):
+		distances[i] = round(distances[i], 2)
+	return distances
 
 try:
     while True:
@@ -101,6 +109,7 @@ try:
 
         if button_state == GPIO.LOW and last_button_state == GPIO.HIGH:
             motors_running = not motors_running
+            target_angle = heading
         
         mag = list(imu.read_magnetometer_data())
         heading = math.atan2(mag[AXES[0]], mag[AXES[1]])
@@ -108,43 +117,51 @@ try:
             heading += 2 * math.pi
         heading = math.degrees(heading)
         heading = round(heading)
-        print(f"Heading: {heading}°")
-		
+        print(f"Heading: {heading}° \t targets: {target_angle}")
         if time.time() - last_read > LIDAR_READ_INTERVAL:
             distance = read_lidar()
-            print(distance)
-            print("Number of tiles ahead:/t", distance[0]/28)
+            # print(distance)
+            #print("Number of tiles ahead:/t", distance[0]/28)
             last_read = time.time()
-		
+
         if motors_running:
-			"""
-			# Turn until heading is within 10 degrees of target
+            # Turn until heading is within 10 degrees of target
             if abs(target_angle - heading) > 10:
                 turn(target_angle, heading)
+                print("aligning")
             else:
-                stop_motor(left_motor_id)
-                stop_motor(right_motor_id)"""
-            if distance[0] < 15:
-				if distance[2] > 15:
-					target_angle = heading + 90
-					if abs(target_angle - heading) > 10:
-						turn(target_angle, heading)
-				elif distance[6] < 15:
-					target_angle = heading - 90
-					if abs(target_angle - heading) > 10:
-						turn(target_angle, heading)
-				else:
-					while distance[2] < 15 and distance[6] < 15:
-						 if distance[2] > 15:
-							target_angle = heading + 90
-							if abs(target_angle - heading) > 10:
-								turn(target_angle, heading)
-						elif distance[6] < 15:
-							target_angle = heading - 90
-							if abs(target_angle - heading) > 10:
-								turn(target_angle, heading)
-			else:
-				forward()
+				# checks open nodes
+                if distance[0] < 12:
+					# checks each side of the robot to see what nodes are open
+                    if distance[2] > 15:
+                        print("going left")
+                        if heading >= 270:
+                            target_angle = 90 - (360-heading)
+                        else:
+                            target_angle = heading + 90
+                        
+                    elif distance[6] > 15:
+                        print("going right")
+                        if heading <= 90:
+                            target_angle = 360 - (90-heading)
+                        else:
+                            target_angle = heading - 90
+                    """
+					# this is for dead ends
+                    else:
+                        while distance[2] < 15 and distance[6] < 15:
+                            if distance[2] > 15:
+                                target_angle = heading + 90
+                                if abs(target_angle - heading) > 10:
+                                    turn(target_angle, heading)
+                            elif distance[6] < 15:
+                                target_angle = heading - 90
+                                if abs(target_angle - heading) > 10:
+                                    turn(target_angle, heading)"""
+                else:
+					# goes forwards until there is a blockage
+                    print("onwards")
+                    forwards()
         else:
             stop_motor(15)
             stop_motor(18)
