@@ -27,8 +27,9 @@ lidar_response = bytearray(20)
 class SearchStates(Enum):
     SEARCH_NODE = 0
     DISCOVER_NODES = 1
-    PICK_NEXT_NODE = 2,
-    MOVE_NODE = 3
+    PICK_NEXT_NODE = 2
+    TURN_TO_ANGLE = 3
+    MOVE_NODE = 4
 
 # this is for the visited squares
 direction_facing = 0
@@ -37,8 +38,11 @@ connections = {}
 visited = set((0, 0))
 current_node = [0, 0]
 search_state = SearchStates.DISCOVER_NODES
-target_square = [0, 0]
-
+target_node = [0, 0]
+target_path = [[0, 0]]
+path_node = 0
+target_angle = []
+current_row_pos = None
 
 # Square Size 
 
@@ -70,7 +74,7 @@ MIN_DISTANCE = 0
 MAX_ANGLE = 45
 MIN_ANGLE = 5
 MAX_TURN_SPEED = 480
-MIN_TURN_SPEED = 200
+MIN_TURN_SPEED = 240
 
 # Enable torque
 serial_connection.write_data(left_motor_id, 24, [1])
@@ -86,9 +90,10 @@ Z = 2
 
 AXES = X, Y
 
-amin = [-70.95, -31.80, -89.70]
-amax = [23.25, 68.25, 11.25]
 
+amin = [-71.40, -30.45, -89.25]
+amax = [24.45, 70.05, 13.65]
+averaging_heading = []
 
 # Function to control a wheel
 def wheel(motor_id, speed, direction="cw"):
@@ -124,6 +129,10 @@ def turn(target_angle, heading):
     diff = (target_angle - heading + 360) % 360  
     speed = min(max(abs(diff-MIN_ANGLE), 0), (MAX_ANGLE-MIN_ANGLE))/(MAX_ANGLE-MIN_ANGLE) * (MAX_TURN_SPEED-MIN_SPEED) + MIN_SPEED
     speed = int(speed)
+    if abs(target_angle - heading) < 2.5:
+        stop_motor(right_motor_id)
+        stop_motor(left_motor_id)
+        return True
     if diff > 180:
         # Turn CCW
         wheel(left_motor_id, speed, "ccw")
@@ -132,9 +141,8 @@ def turn(target_angle, heading):
         # Turn CW
         wheel(left_motor_id, speed, "cw")
         wheel(right_motor_id, speed, "cw")
+    return False
 
-target_angle = 180
-aligned = False
 
 def read_lidar():
 	lidar.flushInput()
@@ -152,7 +160,7 @@ def read_lidar():
 		distances[i] = round(distances[i], 2)
 	return distances
 
-def get_heading():
+def get_heading_single():
 	# Read the current, uncalibrated, X, Y & Z magnetic values from the magnetometer and save as a list
 		mag = list(imu.read_magnetometer_data())
 
@@ -194,9 +202,25 @@ def get_heading():
 		heading = math.degrees(heading)
 		# Round heading to nearest full degree
 		heading = round(heading)
-
+		"""
+		averaging_heading.append(heading)
+		
+		if len(averaging_heading) > 10:
+		    averaging_heading.pop(0)
+		    
+		for i in range(len(averaging_heading)):
+		    if heading >= 10 + averaging_heading[i] or heading <= 10 + averaging_heading[i]: 
+			averaging_heading.pop(i)"""
+		
 		# Note: Headings will not be correct until a full 360 deg calibration turn has been completed to generate amin and amax data
 		return heading
+
+def get_heading():
+    heading = 0
+    for i in range(5):
+        heading += get_heading_single()
+    
+    return round(heading/5, 0)
 
 def squares_around():
 	return [round((distance[0]/SQUARE_SIZE)-0.5, 0), round((distance[2]/SQUARE_SIZE)-0.5, 0), round((distance[4]/SQUARE_SIZE)-0.5, 0), round((distance[6]/SQUARE_SIZE)-0.5, 0)]
@@ -245,9 +269,9 @@ def discover_nodes():
 		if squares[i] > 0:
 			dirNode = (direction_facing + i) % 4
 			if dirNode % 2 == 0: 
-				connected.append([current_node[0], current_node[1] - dirNode + 1])
+				connected.append([current_node[0], int(current_node[1] - dirNode + 1)])
 			else:
-				connected.append([current_node[0] - dirNode + 2, current_node[1]])
+				connected.append([int(current_node[0] - dirNode + 2), current_node[1]])
 			if tuple(connected[len(connected)-1]) not in visited:
 				unexplored_nodes.append(connected[len(connected)-1])
 				
@@ -256,23 +280,43 @@ def discover_nodes():
 def get_next_node():
 	# if it has explored all nodes go home
 	if len(unexplored_nodes) == 0:
-        return [0, 0]
+		return [0, 0]
     # get to the next unexplored node
-    next_node = unexplored_nodes.pop()
+	next_node = unexplored_nodes.pop()
     # make sure the node hasn't been visited yet
-    while next_node in visited:
-        if len(unexplored_nodes) == 0:
-            return [0, 0]
-        next_node = unexplored_nodes.pop()
+	while tuple(next_node) in visited:
+		if len(unexplored_nodes) == 0:
+			return [0, 0]
+		next_node = unexplored_nodes.pop()
 
-    return next_node
+	return next_node
+    
+def get_path():
+	if target_node is current_node or target_node in connections[tuple(current_node)]:
+		return [target_node]
+	
+	
+	paths = [[x] for x in connections[tuple(current_node)]]
+	
+	while not any (target_node in sublist for sublist in paths) :
+		paths = [path for path in get_paths_from(y, y[len(y-1)]) for y in paths]
+
+		
+	return next(path for path in paths if target_node in path)
+		
+def get_paths_from(path, node):
+	return [path+[x] for x in connections[tuple(node)]]
+	
 try:
     while True:
         button_state = GPIO.input(BUTTON_PIN)
 
         if button_state == GPIO.LOW and last_button_state == GPIO.HIGH:
-            motors_running = not motors_running
-            target_angle = heading
+            if len(target_angle) != 4: 
+                target_angle.append(heading)
+            else:
+                motors_running = not motors_running
+	
             time.sleep(0.1)
         """mag = list(imu.read_magnetometer_data())
         heading = math.atan2(mag[AXES[0]], mag[AXES[1]])
@@ -286,36 +330,76 @@ try:
         
         if time.time() - last_read > LIDAR_READ_INTERVAL:
             distance = read_lidar()
-            print(distance)
+            #print(distance)
             #print("Number of tiles ahead:/t", distance[0]/30, round((distance[0]/30)-0.5, 0)) 
-            print(squares_around())
+            #print(squares_around())
             last_read = time.time()
             
         # where we are, where we were, where we can go
-            
-            
         if motors_running:
+            print(search_state)
+			
             if search_state == SearchStates.SEARCH_NODE:
-                pass
-                
+                search_state = SearchStates.DISCOVER_NODES
+                # get the color of hte ground
             elif search_state == SearchStates.DISCOVER_NODES:
                 discover_nodes()
                 search_state = SearchStates.PICK_NEXT_NODE
                 
             elif search_state == SearchStates.PICK_NEXT_NODE:
                 print(unexplored_nodes)
-                get_next_node()
-                search_state = SearchStates.MOVE_NODE
-                
+                target_node = get_next_node()
+                print(target_node)
+                target_path = get_path()
+                path_node = 0
+                print(target_path)
+                search_state = SearchStates.TURN_TO_ANGLE
+			
+            elif search_state == SearchStates.TURN_TO_ANGLE:
+                angle = 0
+				
+                next_node = target_path[path_node]
+                if current_node[0] == next_node[0]:
+                    angle = target_angle[0 if next_node[1] - current_node[1] > 0 else 2]
+                else:
+                    angle = target_angle[1 if next_node[0] - current_node[0] > 0 else 3]
+				
+                print(angle)
+                print(heading)
+                print(current_node)
+                print(next_node)
+                print(target_angle)
+                if turn(angle % 360, heading):
+                    if current_node[0] == next_node[0]:
+                        direction_facing = 0 if next_node[1] - current_node[1] > 0 else 2
+                    else:
+                        direction_facing = 1 if next_node[0] - current_node[0] > 0 else 3
+                    current_row_pos = squares_around()[2]
+                    print(direction_facing)
+                    search_state = SearchStates.MOVE_NODE
+					
+					
             elif search_state == SearchStates.MOVE_NODE:
-                pass
-                
+                print(target_path[path_node])
+                print(current_row_pos + 1)
+                if move_to_square(current_row_pos + 1):
+                    current_node = target_path[path_node]
+                    visited.add(tuple(current_node))
+                    if current_node == target_node :
+                        search_state = SearchStates.SEARCH_NODE
+                    else: 
+                        path_node += 1
+                        search_state = SearchStates.TURN_TO_ANGLE
+					
+				 
+					     
             else:
                 break
                     
         else:
-            stop_motor(15)
-            stop_motor(18)
+            print(target_angle)   
+            stop_motor(left_motor_id)
+            stop_motor(right_motor_id)
 
 finally:
     stop_motor(left_motor_id)
