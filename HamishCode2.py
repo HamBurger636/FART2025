@@ -9,6 +9,7 @@ from random import randint
 import subprocess
 import atexit
 import os
+from collections import deque
 
 # these are the hardware libs
 from pyax12.connection import Connection
@@ -44,7 +45,7 @@ SERVO_BAUD = 1000000
 LEFT_MOTOR_ID = 15
 RIGHT_MOTOR_ID = 18
 DEFAULT_MOTOR_SPEED = 580
-MIN_SPEED = 300
+MIN_SPEED = 400
 
 
 # This is the speeds needed for turning and tolerance is how close the robot has to be to the correct angle to be deemed correct
@@ -89,6 +90,7 @@ distance = [0.0] * 8
 colourSensor = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.5)
 
 # the communicatoin with the arduino was slowing down the program because once the main program called for the RGB values it took half a second for the arduino to reply in which time nothing was able happen, because of this i moved the communicatoin over to a diffrent python file which prints the vlaues into a text file which the main file reads  
+# the same thing happened with the camera so i moved that to a diffrent file as well.
 # this is for opening the other program which checks for the colours 
 COLOUR_HELPER_PATH = "/home/fart/fart/colorsensor.py"  # adjust path
 
@@ -119,15 +121,17 @@ unexplored_nodes = []
 
 # the connections are all of the squares that are able to be moved from one to another, connections are only made to adjacent squares
 connections = {}  # adjacency: tuple(node) -> list of neighbor tuples
-search_state = SearchStates.DISCOVER_NODES
+search_state = SearchStates.SEARCH_NODE
 target_node = [0, 0]
 target_path = []
 path_idx = 0
 
 # target angles for facing directions (calibrate these at the start), i am doing this instead of just adding or removing 90 from the current facing becasue there will be a slow drift in direction over many turns
 # they are normally not set here but instead you face the robot every directoin and press the button at the start 4 times to set every direction
-target_angles = [260,354, 83, 159]  # 0:north,1:east,2:south,3:west
+target_angles = [] #[206,312, 53, 130]  # 0:north,1:east,2:south,3:west
 
+# this is for turning around on the stop for the 
+turned_to = []
 
 # These functions are used to move to robot using the servos 
 
@@ -152,7 +156,7 @@ def forwards(speed=None):
     wheel(LEFT_MOTOR_ID, s, "cw")
     wheel(RIGHT_MOTOR_ID, s, "ccw")
     
-    
+# i dont think this was used 
 def turn_forwards(turn_dir):
     # if it is more than 10? degrees off it starts the program which just turns one side of the motors slower
     # turn_dir = 'left' means the robot it drifting left 
@@ -174,10 +178,48 @@ def backwards(speed=None):
 def stop_all():
     stop_motor(LEFT_MOTOR_ID)
     stop_motor(RIGHT_MOTOR_ID)
-    
-    
+
+# i use turn_around for the camera to dectct victems on the walls, it turns around in a full 360 to scan all of the walls.
+def turn_around(turned_to):
+    global direction_facing
+
+    # Read current heading
+    heading = get_heading()
+
+    # Initialize rotation sequence if needed
+    if not turned_to:
+        turned_to.append(heading)
+        print(f"Starting 360° rotation at heading {heading:.1f}")
+        return False
+
+    # Determine the next target angle, this is 90 more cw
+    last_angle = turned_to[-1]
+    target_angle = (last_angle + 90) % 360
+
+    # this checks if the robot is close enough to the 90 degrees to search the wall
+    diff = angle_diff(target_angle, heading)
+    print(f"Turning to {target_angle:.1f}°, current={heading:.1f}, diff={diff:.1f}")
+
+    # i still use turn_to_angle for these 90 degree implements
+    done = turn_to_angle(target_angle, heading)
+
+    # If within the tolerance record the new direction
+    if abs(diff) < TURN_TOLERANCE_DEG and target_angle not in turned_to:
+        turned_to.append(target_angle)
+        print(f"Reached {target_angle:.1f}° -> turned_to = {turned_to}")
+        time.sleep(0.5)  # brief pause between segments
+
+    # once it has turned 4 times it comletes the rotation and tells the main program
+    if len(turned_to) >= 4:
+        stop_all()
+        direction_facing = (direction_facing + 4) % 4
+        return True
+
+    return False
+
+
 # LIDAR & IMU utilities
-# the lidar is a terra bee Tera ranger 
+# the lidar is a terra bee Tera ranger multi flex
 def read_lidar():
     # Read 20 bytes frame as original code, parse safely and return list of 8 distances (cm)."""
     global lidar
@@ -284,7 +326,7 @@ def get_colour():
     except:
         return None
 
-# this takes the values and gives back the colour
+# this takes the values and gives back the colour which is used to know if the robot is on black
 def check_colours(vals):
     vals = get_colour()
     if vals is None:
@@ -304,6 +346,25 @@ def check_colours(vals):
     return "UNKNOWN"
 
 
+# this gets the outputs from the camera handler and interpters them depending on if they are a person 
+def get_person():
+    try:
+    # the code reads the vlaues from a file and gives back the RGB values
+        with open("/tmp/AI_camera.txt", "r") as f:
+            line = f.read().strip()
+            if line == "1":
+                print("1")
+                return True
+            elif line == "0":
+                print("0")
+                return False
+            else:
+                print("idk")
+                return False
+    except:
+        return None
+	
+	
 # Navagation with the nodes, discovery, pathfinding
 
 def squares_around(dists):
@@ -317,13 +378,13 @@ def squares_around(dists):
 # 
 def discover_nodes(dists):
     # dists is the vlaues of all of the lidar
-    """Populate connections for current_node based on squares around.
-       Adds unexplored neighbor nodes that are not visited/blocked."""
-    # connected is a list of dictonary of all nodes and what nodes they are connected to
+
+    # connected is a list of dictonary of all nodes and what nodes they are connected to, this is used for path finding
     connected = []
     sq = squares_around(dists)
+    
     # map relative indices to neighbor coordinates
-    # facing is direction_facing, sensor i corresponds to (direction_facing + i) % 4 for i in [0,1,2,3] to get the facing
+    # facing is direction_facing, sensor i corresponds to (direction_facing + i) % 4 for i in [0,1,2,3] to get the direction facing of the robot
     for i in range(4):
         if sq[i] > 0:
             dir_idx = (direction_facing + i) % 4
@@ -348,29 +409,35 @@ def discover_nodes(dists):
 
 # this choses the what node it is going to go to next
 def get_next_node():
-    # it gets the list of unexploded nodes and if   
+    # it gets the list of unexploded nodes and removes nodes that it has been too until it finds one it hasnt been to, this means it will always be to every node before returning back home
     while unexplored_nodes:
         cand = unexplored_nodes.pop()
         if cand not in visited and cand not in blocked:
             return list(cand)
     return [0, 0]
 
+# this is for finding the shortest path for moving between nodes is
 def find_path_bfs(start, goal):
-    """BFS in connections graph. returns list of node lists from start to goal inclusive or [] if not found."""
-    from collections import deque
+    # this checks if it is at the current desired node
     if start == goal:
         return [start]
+    
     q = deque()
     q.append([tuple(start)])
     seen = set([tuple(start)])
+    # while it has not found the shortest path it 
     while q:
+	# it looks the for shorst path by removing the long ones then gets te lest number of connections
+	# Breadth-First Search (BFS) handles chosing the next node 
         path = q.popleft()
         node = path[-1]
         neighs = connections.get(node, [])
         for n in neighs:
+	    # checks if any of the paths it will be going to are blocked 
             if n in seen or n in blocked:
                 continue
             newpath = list(path) + [n]
+	    # this is set as the new path to follow
             if list(n) == goal:
                 return [list(x) for x in newpath]
             seen.add(n)
@@ -379,12 +446,12 @@ def find_path_bfs(start, goal):
 
 # MOVEMENT helpers
 def angle_diff(a, b):
-    """Smallest signed difference a-b in degrees [-180,180]."""
+    # this is for finding out what is the best way to turn to get to the desired angle 
     d = (a - b + 180) % 360 - 180
     return d
 
+# this is used to turn until it is at the desired agnle
 def turn_to_angle(target_angle, heading):
-    """Turn toward target_angle. Return True when within tolerance."""
     diff = angle_diff(target_angle, heading)
     if abs(diff) < TURN_TOLERANCE_DEG:
         stop_all()
@@ -406,23 +473,25 @@ def turn_to_angle(target_angle, heading):
 last_straight_error = 0.0
 last_straight_time = None
 
+# this is not used in the final robot but it there incase we need to add it
 def straighten_using_lidar(dists, heading):
-    """Attempt to make robot aligned in the corridor / tile using left/right readings.
-       Returns True when straight enough."""
+
     global last_straight_error, last_straight_time
-    # pick sides: when moving forward compare front-left (index 7) and front-right (index 1)
-    fl = dists[7]  # front-left diagonal (if available)
-    fr = dists[1]  # front-right diagonal
-    # fallback to LEFT_IDX and RIGHT_IDX if diagonals are bad
-    if fl <= 0 or fr <= 0:
-        fl = dists[LEFT_IDX]
-        fr = dists[RIGHT_IDX]
+    # picks the closest side if there is one
+    if dists[2] > dists[6]:
+	
+	fl = dists[1] 
+	fr = dists[3]  
+    else:
+	fl = dists[5] 
+	fr = dists[7]  
+	
     error = fr - fl  # positive -> robot is rotated clockwise (right is farther away)
     now = time.time()
     dt = (now - last_straight_time) if last_straight_time else 0.05
     de = (error - last_straight_error) / dt if dt > 0 else 0.0
 
-    # PD output: generate small heading adjustment
+    # PD output generate small heading adjustment
     out = STRAIGHT_PD_P * error + STRAIGHT_PD_D * de
     last_straight_error = error
     last_straight_time = now
@@ -438,11 +507,7 @@ def straighten_using_lidar(dists, heading):
     return False
 
 def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
-    """
-    Move forward/backward to reach the requested tile offset in front:
-    target_tile_offset: number of tiles forward to move (1 means 1 tile ahead)
-    Returns True when reached tile center.
-    """
+
     # We will use front and back sensor (FRONT_IDX, BACK_IDX) to estimate centering
     front = dists[FRONT_IDX]
     back = dists[BACK_IDX]
@@ -452,20 +517,21 @@ def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
     # front decreases to (SQUARE_SIZE * (target_tile_offset - 0.5))
     if target_tile_offset <= 0:
         return True
-	
-    desired_front = desired_front - 30 # desired_fronta[0] - 30
+    # we use the front sensor to know if it has move forwardsfar enough be removing the square size of the total distance
+    desired_front = desired_front - SQUARE_SIZE # desired_fronta[0] - 30
+    # this is incase there is less than one square in front of it
     if desired_front <= 9: 
         desired_front = 9
-    # if the front reading is larger than desired, drive forward; if smaller, back up
+    # if the front reading is larger than desired, drive forward, if smaller, back up
     error = front - desired_front
     #  print(desired_front)
 
-    # stopping criteria: if front is within ~3 cm or change small
+    # stopping criteria: if front is within 3 cm or change small
     if abs(error) < 3.0:
         stop_all()
         return True
 
-    # basic proportional speed
+    # basic proportional speed to stop the robot overshooting the target distance
     speed = int(max(MIN_SPEED, min(DEFAULT_MOTOR_SPEED, (abs(error) / (SQUARE_SIZE * 2.0)) * DEFAULT_MOTOR_SPEED)))
     
     if error > 0:
@@ -487,7 +553,7 @@ def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
             bias_left = 1
         
         print(target_angles[facing], bias_left, bias_right)
-	    
+	# the bias is added the to movement speed
         left_speed = speed * bias_left # - int(max(-50, min(50, lat_diff * 2)))
         right_speed = speed * bias_right # + int(max(-50, min(50, lat_diff * 2)))
 	
@@ -498,52 +564,78 @@ def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
         lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
         left_speed = speed - int(max(-50, min(50, lat_diff * 2)))
         right_speed = speed + int(max(-50, min(50, lat_diff * 2)))
+	# there is no bias to the speed because hopefully it never has to move backwards
         wheel(LEFT_MOTOR_ID, max(0, left_speed), "ccw")
         wheel(RIGHT_MOTOR_ID, max(0, right_speed), "cw")
     return False
 
 
 # MAIN LOOP
-
+# we need it in a try loop because if it crashes the servos will continue moving from there last recived input 
 try:
+    # last lidar read is for taking a lidar read every 1/4th of a second, the color sensor and victim dector uses this as well for checking
     last_lidar_read = 0
+    
     while True:
-        # button handling (toggle motors)
+        # button handling (toggle motors) and getting the initical heading for more accurate turning. We use a button to start because it means it is easy to start the program once in the maze
         button_state = GPIO.input(BUTTON_PIN)
         if button_state == GPIO.LOW and last_button_state == GPIO.HIGH:
-            #if len(target_angles) != 4:
-            #    target_angles.append(heading)
-            #    print(target_angles)
-            #else:
-            motors_running = not motors_running
+            if len(target_angles) != 4:
+                target_angles.append(heading)
+                print(target_angles)
+            else:
+                motors_running = not motors_running
+	    # debounce delay
             time.sleep(0.15)
 	    
 		
         last_button_state = button_state
-
+	# it will always print the heading because it is import for me to know because it is the root of a lot of the problems
         heading = get_heading()
-        # print(distance)
+        print(heading)
         # lidar read
         if time.time() - last_lidar_read > LIDAR_READ_INTERVAL:
             distance = read_lidar()
             last_lidar_read = time.time()
 
-            # piggyback colour read on LIDAR interval
+            # piggyback colour read and victime dection on LIDAR interval
             colours = get_colour()
             colour_name = check_colours(colours) if colours else None
+            get_person()
             # if colour_name:
                 # print("Color:", colour_name)
-
+	# the motors will be turned off if the button is presses 
         if not motors_running:
             stop_all()
             continue
 
-        # high level state machine
+        # high level machine states 
         print("STATE:", search_state, "current:", current_node, "visited:", len(visited))
-        if search_state == SearchStates.DISCOVER_NODES:
-            discover_nodes(distance)
-            search_state = SearchStates.PICK_NEXT_NODE
+	
+	# the searchStates class at the top holds all of the diffrent states that the robot can be in
+	# most of the logic is handled by the functions above
+	
+	# the fist state looks around the sqaure for any victems
+        if search_state == SearchStates.SEARCH_NODE:
+            print(turned_to)
+            print(direction_facing)
 
+            if turn_around(turned_to):
+                turned_to.clear()
+                search_state = SearchStates.DISCOVER_NODES
+		
+            if get_person():
+                print("persin fuond")
+		# becase the victem dection is handled by the MV camera? the robot only knows if somethng has been found and the rules state the robot needs to stop for 5 seconds if something is found, i chose 6 seconds to make sure the judge can see its 5 seconds  
+                time.sleep(6)
+		
+	# once the square is searched it looks around for new nodes  
+        elif search_state == SearchStates.DISCOVER_NODES:
+            discover_nodes(distance)
+	    
+            search_state = SearchStates.PICK_NEXT_NODE
+	
+	# next it picks the node it wants to go to
         elif search_state == SearchStates.PICK_NEXT_NODE:
             # select next unexplored node
             target_node = get_next_node()
@@ -557,7 +649,8 @@ try:
             target_path = [list(x) for x in target_path]
             path_idx = 1  # index of next node to go to (0 is current)
             search_state = SearchStates.TURN_TO_ANGLE
-
+	
+	# once it knows where it needs to go it turns to the appropate angle  by getting its current direction and then its desired derictoin
         elif search_state == SearchStates.TURN_TO_ANGLE:
             if path_idx >= len(target_path):
                 # arrived or no where -> go discover again
@@ -593,7 +686,8 @@ try:
                 desired_tiles_forward = 1
                 desired_front = distance[0]
                 search_state = SearchStates.MOVE_NODE
-
+	
+	# once it is facing the correct directoin it moves one square forwards, this also handles the chance of driving onto a death square where it is labled "blocked"
         elif search_state == SearchStates.MOVE_NODE:
             # if color says black before moving into next tile, back off and mark blocked
             if colour_name == "BLACK":
@@ -626,19 +720,21 @@ try:
                 else:
                     path_idx += 1
                     search_state = SearchStates.TURN_TO_ANGLE
-
+	# this was becasuse we use to turn time based when the compass was broken and we needed extra strightening out but now it is unnessary
         elif search_state == SearchStates.STRAIGHTEN:
             """done = straighten_using_lidar(distance, heading)
             if done:
                 search_state = SearchStates.DISCOVER_NODES"""
-            search_state = SearchStates.DISCOVER_NODES
+            search_state = SearchStates.SEARCH_NODE
 
         else:
             # unknown state -> restart discover
+            print("unknown step")
             search_state = SearchStates.DISCOVER_NODES
 
         time.sleep(0.02)
-
+	
+# if the program crashes or is unexplectly terminited it stops all of the motors and cleans the serial ports
 finally:
     stop_all()
     serial_connection.write_data(LEFT_MOTOR_ID, 24, [0])
