@@ -43,14 +43,14 @@ SERVO_PORT = "/dev/ttyACM0"
 SERVO_BAUD = 1000000
 LEFT_MOTOR_ID = 15
 RIGHT_MOTOR_ID = 18
-DEFAULT_MOTOR_SPEED = 480
+DEFAULT_MOTOR_SPEED = 580
 MIN_SPEED = 300
 
 
 # This is the speeds needed for turning and tolerance is how close the robot has to be to the correct angle to be deemed correct
 TURN_TOLERANCE_DEG = 5
 TURN_MAX_SPEED = 480
-TURN_MIN_SPEED = 300
+TURN_MIN_SPEED = 250
 
 # this code was not used in the final robot as of the 9/10/2025 because it was able to center itself well enough to not needed it but it worked by making the diagonals equal 
 # straightening thresholds
@@ -126,7 +126,7 @@ path_idx = 0
 
 # target angles for facing directions (calibrate these at the start), i am doing this instead of just adding or removing 90 from the current facing becasue there will be a slow drift in direction over many turns
 # they are normally not set here but instead you face the robot every directoin and press the button at the start 4 times to set every direction
-target_angles = [348, 75, 155, 244]  # 0:north,1:east,2:south,3:west
+target_angles = [260,354, 83, 159]  # 0:north,1:east,2:south,3:west
 
 
 # These functions are used to move to robot using the servos 
@@ -151,6 +151,19 @@ def forwards(speed=None):
     s = DEFAULT_MOTOR_SPEED if speed is None else int(speed)
     wheel(LEFT_MOTOR_ID, s, "cw")
     wheel(RIGHT_MOTOR_ID, s, "ccw")
+    
+    
+def turn_forwards(turn_dir):
+    # if it is more than 10? degrees off it starts the program which just turns one side of the motors slower
+    # turn_dir = 'left' means the robot it drifting left 
+    if turn_dir == 'RIGHT':
+        s = DEFAULT_MOTOR_SPEED if speed is None else int(speed)
+        wheel(LEFT_MOTOR_ID, s, "cw")
+        wheel(RIGHT_MOTOR_ID, s+50, "ccw")
+    elif turn_dir == 'LEFT':
+        s = DEFAULT_MOTOR_SPEED if speed is None else int(speed)
+        wheel(LEFT_MOTOR_ID, s+50, "cw")
+        wheel(RIGHT_MOTOR_ID, s, "ccw")
 # it is the same for backwards as forwards just reversed directins
 def backwards(speed=None):
     s = DEFAULT_MOTOR_SPEED if speed is None else int(speed)
@@ -177,7 +190,7 @@ def read_lidar():
         if len(resp) < 20:
             # partial read: return previous distances unchanged
             return distance
-        # This changes the raw data into 8 cm values
+        # This changes the raw data into eight diffrent cm values
         d = []
         for i in range(8):
             idx = 2 + i*2
@@ -266,7 +279,7 @@ def get_colour():
             line = f.read().strip()
             if "," in line:
                 r, g, b = map(int, line.split(","))
-                print(r, g, b)
+                # print(r, g, b)
                 return [r, g, b]
     except:
         return None
@@ -364,9 +377,7 @@ def find_path_bfs(start, goal):
             q.append(newpath)
     return []
 
-# -------------------------
 # MOVEMENT helpers
-# -------------------------
 def angle_diff(a, b):
     """Smallest signed difference a-b in degrees [-180,180]."""
     d = (a - b + 180) % 360 - 180
@@ -426,7 +437,7 @@ def straighten_using_lidar(dists, heading):
     turn_to_angle(target, heading)
     return False
 
-def move_to_next_tile(dists, target_tile_offset):
+def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
     """
     Move forward/backward to reach the requested tile offset in front:
     target_tile_offset: number of tiles forward to move (1 means 1 tile ahead)
@@ -441,10 +452,13 @@ def move_to_next_tile(dists, target_tile_offset):
     # front decreases to (SQUARE_SIZE * (target_tile_offset - 0.5))
     if target_tile_offset <= 0:
         return True
-
-    desired_front = 9 # SQUARE_SIZE * (target_tile_offset - 0.5)
+	
+    desired_front = desired_front - 30 # desired_fronta[0] - 30
+    if desired_front <= 9: 
+        desired_front = 9
     # if the front reading is larger than desired, drive forward; if smaller, back up
     error = front - desired_front
+    #  print(desired_front)
 
     # stopping criteria: if front is within ~3 cm or change small
     if abs(error) < 3.0:
@@ -453,16 +467,32 @@ def move_to_next_tile(dists, target_tile_offset):
 
     # basic proportional speed
     speed = int(max(MIN_SPEED, min(DEFAULT_MOTOR_SPEED, (abs(error) / (SQUARE_SIZE * 2.0)) * DEFAULT_MOTOR_SPEED)))
+    
     if error > 0:
         # front is too far away -> move forward
         # differential correction: keep front-left/right similar
         # small correction to motors using left/right lateral sensor difference:
-        lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
+        # this was some inbuilt strighten to go as it went 
+	# lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
         # apply small offset
-        left_speed = speed - int(max(-50, min(50, lat_diff * 2)))
-        right_speed = speed + int(max(-50, min(50, lat_diff * 2)))
-        wheel(LEFT_MOTOR_ID, max(0, left_speed), "cw")
-        wheel(RIGHT_MOTOR_ID, max(0, right_speed), "ccw")
+        if abs(heading - target_angles[facing]) > 4:
+            if target_angles[facing] > heading:
+                bias_left = 1
+                bias_right = 0.4
+            elif heading > target_angles[facing]:
+                bias_right = 1
+                bias_left = 0.4
+        else:
+            bias_right = 1
+            bias_left = 1
+        
+        print(target_angles[facing], bias_left, bias_right)
+	    
+        left_speed = speed * bias_left # - int(max(-50, min(50, lat_diff * 2)))
+        right_speed = speed * bias_right # + int(max(-50, min(50, lat_diff * 2)))
+	
+        wheel(LEFT_MOTOR_ID, left_speed, "cw")
+        wheel(RIGHT_MOTOR_ID, right_speed, "ccw")
     else:
         # we are too close -> back up
         lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
@@ -472,9 +502,9 @@ def move_to_next_tile(dists, target_tile_offset):
         wheel(RIGHT_MOTOR_ID, max(0, right_speed), "cw")
     return False
 
-# -------------------------
+
 # MAIN LOOP
-# -------------------------
+
 try:
     last_lidar_read = 0
     while True:
@@ -492,7 +522,7 @@ try:
         last_button_state = button_state
 
         heading = get_heading()
-        print(heading)
+        # print(distance)
         # lidar read
         if time.time() - last_lidar_read > LIDAR_READ_INTERVAL:
             distance = read_lidar()
@@ -501,8 +531,8 @@ try:
             # piggyback colour read on LIDAR interval
             colours = get_colour()
             colour_name = check_colours(colours) if colours else None
-            if colour_name:
-                print("Color:", colour_name)
+            # if colour_name:
+                # print("Color:", colour_name)
 
         if not motors_running:
             stop_all()
@@ -561,6 +591,7 @@ try:
                 row_pos = squares_around(distance)[2]  # back sensing used earlier; keep existing logic
                 # store tile offset as 1 tile forward (target) by default
                 desired_tiles_forward = 1
+                desired_front = distance[0]
                 search_state = SearchStates.MOVE_NODE
 
         elif search_state == SearchStates.MOVE_NODE:
@@ -583,7 +614,7 @@ try:
                 continue
 
             # attempt to move forward one tile (target tile offset = 1)
-            reached = move_to_next_tile(distance, 1)
+            reached = move_to_next_tile(distance, 1, desired_front, new_facing)
             if reached:
                 # update position
                 current_node = target_path[path_idx]
