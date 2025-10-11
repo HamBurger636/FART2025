@@ -61,7 +61,7 @@ STRAIGHT_PD_P = 6.0
 STRAIGHT_PD_D = 2.0
 
 # the color sensor gives back three values (r, g, b), and if it sees white it continues and black moves backwards. These values might need to be changed on the day
-BLACK_THRESHOLD = 10
+BLACK_THRESHOLD = 5
 WHITE_THRESHOLD = 30
 
 # the states the program can be in
@@ -130,7 +130,7 @@ path_idx = 0
 # they are normally not set here but instead you face the robot every directoin and press the button at the start 4 times to set every direction
 target_angles = [] #[206,312, 53, 130]  # 0:north,1:east,2:south,3:west
 
-# this is for turning around on the stop for the 
+# this is for turning around on the spot to know what angles it has checked so far 
 turned_to = []
 
 # These functions are used to move to robot using the servos 
@@ -194,19 +194,19 @@ def turn_around(turned_to):
 
     # Determine the next target angle, this is 90 more cw
     last_angle = turned_to[-1]
-    target_angle = (last_angle + 90) % 360
+    target_angles = (last_angle + 90) % 360
 
     # this checks if the robot is close enough to the 90 degrees to search the wall
-    diff = angle_diff(target_angle, heading)
-    print(f"Turning to {target_angle:.1f}°, current={heading:.1f}, diff={diff:.1f}")
+    diff = angle_diff(target_angles, heading)
+    print(f"Turning to {target_angles:.1f}°, current={heading:.1f}, diff={diff:.1f}")
 
     # i still use turn_to_angle for these 90 degree implements
-    done = turn_to_angle(target_angle, heading)
+    done = turn_to_angle(target_angles, heading)
 
     # If within the tolerance record the new direction
-    if abs(diff) < TURN_TOLERANCE_DEG and target_angle not in turned_to:
-        turned_to.append(target_angle)
-        print(f"Reached {target_angle:.1f}° -> turned_to = {turned_to}")
+    if abs(diff) < TURN_TOLERANCE_DEG and target_angles not in turned_to:
+        turned_to.append(target_angles)
+        print(f"Reached {target_angles:.1f}° -> turned_to = {turned_to}")
         time.sleep(0.5)  # brief pause between segments
 
     # once it has turned 4 times it comletes the rotation and tells the main program
@@ -334,14 +334,19 @@ def check_colours(vals):
     r, g, b = vals
     # these are the thresholds for checking what colour it is on 
     if r < BLACK_THRESHOLD and g < BLACK_THRESHOLD and b < BLACK_THRESHOLD:
+        print("BLACK")
         return "BLACK"
     if r > WHITE_THRESHOLD and g > WHITE_THRESHOLD and b > WHITE_THRESHOLD:
+        print("WHITE")
         return "WHITE"
     if r > g and r > b:
+        print("RED")
         return "RED"
     if g > r and g > b:
+        print("GREEN")
         return "GREEN"
     if b > r and b > g:
+        print("BLUE")
         return "BLUE"
     return "UNKNOWN"
 
@@ -353,10 +358,11 @@ def get_person():
         with open("/tmp/AI_camera.txt", "r") as f:
             line = f.read().strip()
             if line == "1":
-                print("1")
+                print("person: 1")
+                time.sleep(6)
                 return True
             elif line == "0":
-                print("0")
+                print("nothing: 0")
                 return False
             else:
                 print("idk")
@@ -480,11 +486,11 @@ def straighten_using_lidar(dists, heading):
     # picks the closest side if there is one
     if dists[2] > dists[6]:
 	
-	fl = dists[1] 
-	fr = dists[3]  
+        fl = dists[1] 
+        fr = dists[3]  
     else:
-	fl = dists[5] 
-	fr = dists[7]  
+        fl = dists[5] 
+        fr = dists[7]  
 	
     error = fr - fl  # positive -> robot is rotated clockwise (right is farther away)
     now = time.time()
@@ -586,25 +592,26 @@ try:
             else:
                 motors_running = not motors_running
 	    # debounce delay
-            time.sleep(0.15)
-	    
-		
+        #    time.sleep(0.15)
+	        
         last_button_state = button_state
 	# it will always print the heading because it is import for me to know because it is the root of a lot of the problems
         heading = get_heading()
-        print(heading)
+        #print(heading)
         # lidar read
+
         if time.time() - last_lidar_read > LIDAR_READ_INTERVAL:
             distance = read_lidar()
+            
             last_lidar_read = time.time()
-
             # piggyback colour read and victime dection on LIDAR interval
-            colours = get_colour()
-            colour_name = check_colours(colours) if colours else None
-            get_person()
+        print(f"Heading: {heading} \t Distances: {distance}")
+
+            # get_person()
             # if colour_name:
                 # print("Color:", colour_name)
 	# the motors will be turned off if the button is presses 
+
         if not motors_running:
             stop_all()
             continue
@@ -614,20 +621,19 @@ try:
 	
 	# the searchStates class at the top holds all of the diffrent states that the robot can be in
 	# most of the logic is handled by the functions above
-	
 	# the fist state looks around the sqaure for any victems
         if search_state == SearchStates.SEARCH_NODE:
-            print(turned_to)
-            print(direction_facing)
+            #print(turned_to)
+            #print(direction_facing)
 
-            if turn_around(turned_to):
-                turned_to.clear()
-                search_state = SearchStates.DISCOVER_NODES
+            #if turn_around(turned_to):
+             #   turned_to.clear()
+            search_state = SearchStates.DISCOVER_NODES
 		
-            if get_person():
-                print("persin fuond")
+            #if get_person():
+            #    print("persin fuond")
 		# becase the victem dection is handled by the MV camera? the robot only knows if somethng has been found and the rules state the robot needs to stop for 5 seconds if something is found, i chose 6 seconds to make sure the judge can see its 5 seconds  
-                time.sleep(6)
+                #time.sleep(6)
 		
 	# once the square is searched it looks around for new nodes  
         elif search_state == SearchStates.DISCOVER_NODES:
@@ -689,6 +695,8 @@ try:
 	
 	# once it is facing the correct directoin it moves one square forwards, this also handles the chance of driving onto a death square where it is labled "blocked"
         elif search_state == SearchStates.MOVE_NODE:
+            colours = get_colour()
+            colour_name = check_colours(colours) if colours else None
             # if color says black before moving into next tile, back off and mark blocked
             if colour_name == "BLACK":
                 # compute neighbor coordinates that we're about to enter
