@@ -10,6 +10,7 @@ import subprocess
 import atexit
 import os
 from collections import deque
+import sys 
 
 # these are the hardware libs
 from pyax12.connection import Connection
@@ -44,14 +45,14 @@ SERVO_PORT = "/dev/ttyACM0"
 SERVO_BAUD = 1000000
 LEFT_MOTOR_ID = 15
 RIGHT_MOTOR_ID = 18
-DEFAULT_MOTOR_SPEED = 580
-MIN_SPEED = 400
+DEFAULT_MOTOR_SPEED = 600
+MIN_SPEED = 430
 
 
 # This is the speeds needed for turning and tolerance is how close the robot has to be to the correct angle to be deemed correct
 TURN_TOLERANCE_DEG = 5
-TURN_MAX_SPEED = 480
-TURN_MIN_SPEED = 250
+TURN_MAX_SPEED = 500
+TURN_MIN_SPEED = 280
 
 # this code was not used in the final robot as of the 9/10/2025 because it was able to center itself well enough to not needed it but it worked by making the diagonals equal 
 # straightening thresholds
@@ -132,6 +133,12 @@ target_angles = [] #[206,312, 53, 130]  # 0:north,1:east,2:south,3:west
 
 # this is for turning around on the spot to know what angles it has checked so far 
 turned_to = []
+
+# this is to reset the robot if the button is held down for two seconds
+reset_timer = 0
+
+# this is because i cant do this anymore and it just finds one victiem then heads right home
+victiem_found = False
 
 # These functions are used to move to robot using the servos 
 
@@ -334,19 +341,14 @@ def check_colours(vals):
     r, g, b = vals
     # these are the thresholds for checking what colour it is on 
     if r < BLACK_THRESHOLD and g < BLACK_THRESHOLD and b < BLACK_THRESHOLD:
-        print("BLACK")
         return "BLACK"
     if r > WHITE_THRESHOLD and g > WHITE_THRESHOLD and b > WHITE_THRESHOLD:
-        print("WHITE")
         return "WHITE"
     if r > g and r > b:
-        print("RED")
         return "RED"
     if g > r and g > b:
-        print("GREEN")
         return "GREEN"
     if b > r and b > g:
-        print("BLUE")
         return "BLUE"
     return "UNKNOWN"
 
@@ -358,11 +360,18 @@ def get_person():
         with open("/tmp/AI_camera.txt", "r") as f:
             line = f.read().strip()
             if line == "1":
-                print("person: 1")
-                time.sleep(6)
+                if distance[2] < 20:
+                    stop_motor(LEFT_MOTOR_ID)
+                    stop_motor(RIGHT_MOTOR_ID)
+                    victiem_found = True
+                    print(victiem_found)
+                    time.sleep(6)
                 return True
+                
+            elif line == '2':
+                stop_motor(LEFT_MOTOR_ID)
+                stop_motor(RIGHT_MOTOR_ID)
             elif line == "0":
-                print("nothing: 0")
                 return False
             else:
                 print("idk")
@@ -576,6 +585,15 @@ def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
     return False
 
 
+def check_button_hold_for_reset():
+    """If the button is held for >2 seconds, restart the program."""
+    if GPIO.input(BUTTON_PIN) == GPIO.LOW:  # button pressed (assuming pull-up)
+        start_time = time.time()
+        while GPIO.input(BUTTON_PIN) == GPIO.LOW:
+            if time.time() - start_time > 2:
+                print("🔁 Button held for 2s — restarting program...")
+                os.execl(sys.executable, sys.executable, *sys.argv)
+            time.sleep(0.05)  # check every 50 ms
 # MAIN LOOP
 # we need it in a try loop because if it crashes the servos will continue moving from there last recived input 
 try:
@@ -585,12 +603,26 @@ try:
     while True:
         # button handling (toggle motors) and getting the initical heading for more accurate turning. We use a button to start because it means it is easy to start the program once in the maze
         button_state = GPIO.input(BUTTON_PIN)
+        check_button_hold_for_reset()
         if button_state == GPIO.LOW and last_button_state == GPIO.HIGH:
+
             if len(target_angles) != 4:
                 target_angles.append(heading)
                 print(target_angles)
             else:
                 motors_running = not motors_running
+                # victiem_found = not victiem_found
+
+        """
+        if button_state == GPIO.HIGH:
+            reset_timer = time.time()
+            print("button pressed")
+            
+        if button_state == GPIO.LOW and (time.time() - reset_timer) > 2:
+            print("reseting")
+            reset()
+        print(reset_timer)
+        """
 	    # debounce delay
         #    time.sleep(0.15)
 	        
@@ -604,12 +636,16 @@ try:
             distance = read_lidar()
             
             last_lidar_read = time.time()
-            # piggyback colour read and victime dection on LIDAR interval
-        print(f"Heading: {heading} \t Distances: {distance}")
+            get_person()
+            
+            colours = get_colour()
+            colour_name = check_colours(colours) if colours else None
 
-            # get_person()
-            # if colour_name:
-                # print("Color:", colour_name)
+            # piggyback colour read and victime dection on LIDAR interval
+        print(f"Heading: {heading} \t Distances: {distance} \t Color: {colour_name} \t Victim: {victiem_found} \t Unexplorded Nodes: {unexplored_nodes}")
+
+        if victiem_found == True:
+            unexplored_nodes = []
 	# the motors will be turned off if the button is presses 
 
         if not motors_running:
@@ -628,6 +664,7 @@ try:
 
             #if turn_around(turned_to):
              #   turned_to.clear()
+            turn_to_angle(target_angles[direction_facing], heading)
             search_state = SearchStates.DISCOVER_NODES
 		
             #if get_person():
@@ -695,8 +732,7 @@ try:
 	
 	# once it is facing the correct directoin it moves one square forwards, this also handles the chance of driving onto a death square where it is labled "blocked"
         elif search_state == SearchStates.MOVE_NODE:
-            colours = get_colour()
-            colour_name = check_colours(colours) if colours else None
+
             # if color says black before moving into next tile, back off and mark blocked
             if colour_name == "BLACK":
                 # compute neighbor coordinates that we're about to enter
