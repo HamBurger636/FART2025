@@ -22,7 +22,7 @@ import serial
 # Variables 
 
 # This is for the lidar where it defins the communication protcals and the setup
-LIDAR_PORT = "/dev/ttyACM2"
+LIDAR_PORT = "/dev/ttyACM1"
 LIDAR_BAUD = 115200
 LIDAR_READ_INTERVAL = 0.25
 
@@ -564,6 +564,10 @@ def move_to_next_tile(dists, target_tile_offset, desired_front, facing, desired_
     if desired_target < 9 and activate_sensor == "back":
         pass
     
+    
+    #if front < 6: 
+    #    return True
+        
 
     print(f"[{active_sensor}] desired_target = {desired_target:.1f} | error = {error:.1f}")
 
