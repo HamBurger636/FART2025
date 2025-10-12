@@ -22,7 +22,7 @@ import serial
 # Variables 
 
 # This is for the lidar where it defins the communication protcals and the setup
-LIDAR_PORT = "/dev/ttyACM1"
+LIDAR_PORT = "/dev/ttyACM2"
 LIDAR_BAUD = 115200
 LIDAR_READ_INTERVAL = 0.25
 
@@ -46,13 +46,13 @@ SERVO_BAUD = 1000000
 LEFT_MOTOR_ID = 15
 RIGHT_MOTOR_ID = 18
 DEFAULT_MOTOR_SPEED = 600
-MIN_SPEED = 430
+MIN_SPEED = 500
 
 
 # This is the speeds needed for turning and tolerance is how close the robot has to be to the correct angle to be deemed correct
 TURN_TOLERANCE_DEG = 5
 TURN_MAX_SPEED = 500
-TURN_MIN_SPEED = 280
+TURN_MIN_SPEED = 400
 
 # this code was not used in the final robot as of the 9/10/2025 because it was able to center itself well enough to not needed it but it worked by making the diagonals equal 
 # straightening thresholds
@@ -136,13 +136,13 @@ turned_to = []
 
 # this is to reset the robot if the button is held down for two seconds
 reset_timer = 0
+time_since_last_person = 0
 
 # this is because i cant do this anymore and it just finds one victiem then heads right home
 victiem_found = False
 
 # These functions are used to move to robot using the servos 
-
-# every functions calls wheel which writes the serial with the information given from the functions and communicates through serial to the motors 
+5
 def wheel(motor_id, speed, direction="cw"):
     # Write to AX12 style motor: speed range 0-1023 for CW and 1024 - 2058 for CCW
     speed = max(0, min(1023, int(speed)))
@@ -255,6 +255,9 @@ def read_lidar():
 # The comapss heading with a min/max calibration
 amin = [-71.40, -30.45, -89.25]
 amax = [24.45, 70.05, 13.65]
+# amin = [-86.40, -42.45, -102.45]
+# amax = [43.35, 87.15, 40.05]
+
 # the last 10 digets are averaged out so if there is a random outlier it dosnt throw off the whole system
 heading_history = []
 
@@ -331,7 +334,7 @@ def get_colour():
                 # print(r, g, b)
                 return [r, g, b]
     except:
-        return None
+        return None 
 
 # this takes the values and gives back the colour which is used to know if the robot is on black
 def check_colours(vals):
@@ -361,6 +364,7 @@ def get_person():
             line = f.read().strip()
             if line == "1":
                 if distance[2] < 20:
+                    print("stopping")
                     stop_motor(LEFT_MOTOR_ID)
                     stop_motor(RIGHT_MOTOR_ID)
                     victiem_found = True
@@ -369,8 +373,18 @@ def get_person():
                 return True
                 
             elif line == '2':
-                stop_motor(LEFT_MOTOR_ID)
-                stop_motor(RIGHT_MOTOR_ID)
+                print("12345678", time_since_last_person)
+
+                if (time.time() - time_since_last_person) > 2:
+                    print("found something")
+                    stop_motor(LEFT_MOTOR_ID)
+                    stop_motor(RIGHT_MOTOR_ID)
+                    time.sleep(0.5)
+                    time_since_last_person = time.time()
+    
+                else:
+                    print("something found to fast")
+            
             elif line == "0":
                 return False
             else:
@@ -521,67 +535,67 @@ def straighten_using_lidar(dists, heading):
     turn_to_angle(target, heading)
     return False
 
-def move_to_next_tile(dists, target_tile_offset, desired_front, facing):
 
-    # We will use front and back sensor (FRONT_IDX, BACK_IDX) to estimate centering
+def move_to_next_tile(dists, target_tile_offset, desired_front, facing, desired_back):
+
     front = dists[FRONT_IDX]
     back = dists[BACK_IDX]
-    # compute expected front/back distances when centered on that tile:
-    # If moving forward N tiles, the front sensor should read roughly (N - 0.5) * SQUARE_SIZE
-    # and back sensor should read (total_ahead + total_back - ...). Simpler: aim to move until
-    # front decreases to (SQUARE_SIZE * (target_tile_offset - 0.5))
-    if target_tile_offset <= 0:
-        return True
-    # we use the front sensor to know if it has move forwardsfar enough be removing the square size of the total distance
-    desired_front = desired_front - SQUARE_SIZE # desired_fronta[0] - 30
-    # this is incase there is less than one square in front of it
-    if desired_front <= 9: 
-        desired_front = 9
-    # if the front reading is larger than desired, drive forward, if smaller, back up
-    error = front - desired_front
-    #  print(desired_front)
 
-    # stopping criteria: if front is within 3 cm or change small
+    if target_tile_offset <= 0:
+        return True  # Already done
+
+    if front > 2000:
+        # Too far or invalid -> use back sensor
+        print("using BACK sensor ")
+        desired_target = desired_back + SQUARE_SIZE - 9
+        error = desired_target - back
+        active_sensor = "back"
+    else:
+        # Normal -> use front sensor
+        print("Using FRONT sensos")
+        desired_target = desired_front - SQUARE_SIZE
+        error = front - desired_target
+        active_sensor = "front"
+
+    # Ensure desired distance doesn't drop below a small minimum
+    if desired_target < 9 and active_sensor == "front":
+        desired_target = 9
+        print("too small front")
+    if desired_target < 9 and activate_sensor == "back":
+        pass
+    
+
+    print(f"[{active_sensor}] desired_target = {desired_target:.1f} | error = {error:.1f}")
+
+    # Stop if close enough
     if abs(error) < 3.0:
         stop_all()
         return True
 
-    # basic proportional speed to stop the robot overshooting the target distance
     speed = int(max(MIN_SPEED, min(DEFAULT_MOTOR_SPEED, (abs(error) / (SQUARE_SIZE * 2.0)) * DEFAULT_MOTOR_SPEED)))
-    
-    if error > 0:
-        # front is too far away -> move forward
-        # differential correction: keep front-left/right similar
-        # small correction to motors using left/right lateral sensor difference:
-        # this was some inbuilt strighten to go as it went 
-	# lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
-        # apply small offset
-        if abs(heading - target_angles[facing]) > 4:
-            if target_angles[facing] > heading:
-                bias_left = 1
-                bias_right = 0.4
-            elif heading > target_angles[facing]:
-                bias_right = 1
-                bias_left = 0.4
+
+    if abs(heading - target_angles[facing]) > 4:
+        if target_angles[facing] > heading:
+            bias_left, bias_right = 1.0, 0.4
         else:
-            bias_right = 1
-            bias_left = 1
-        
-        print(target_angles[facing], bias_left, bias_right)
-	# the bias is added the to movement speed
-        left_speed = speed * bias_left # - int(max(-50, min(50, lat_diff * 2)))
-        right_speed = speed * bias_right # + int(max(-50, min(50, lat_diff * 2)))
-	
+            bias_left, bias_right = 0.4, 1.0
+    else:
+        bias_left, bias_right = 1.0, 1.0
+
+    if error > 0:
+        # too far → move forward
+        left_speed = speed * bias_left
+        right_speed = speed * bias_right
         wheel(LEFT_MOTOR_ID, left_speed, "cw")
         wheel(RIGHT_MOTOR_ID, right_speed, "ccw")
     else:
-        # we are too close -> back up
+        # too close → move backward
         lat_diff = (dists[7] if dists[7] > 0 else dists[LEFT_IDX]) - (dists[1] if dists[1] > 0 else dists[RIGHT_IDX])
         left_speed = speed - int(max(-50, min(50, lat_diff * 2)))
         right_speed = speed + int(max(-50, min(50, lat_diff * 2)))
-	# there is no bias to the speed because hopefully it never has to move backwards
         wheel(LEFT_MOTOR_ID, max(0, left_speed), "ccw")
         wheel(RIGHT_MOTOR_ID, max(0, right_speed), "cw")
+
     return False
 
 
@@ -591,7 +605,7 @@ def check_button_hold_for_reset():
         start_time = time.time()
         while GPIO.input(BUTTON_PIN) == GPIO.LOW:
             if time.time() - start_time > 2:
-                print("🔁 Button held for 2s — restarting program...")
+                print("Button held for 2s — restarting program...")
                 os.execl(sys.executable, sys.executable, *sys.argv)
             time.sleep(0.05)  # check every 50 ms
 # MAIN LOOP
@@ -642,10 +656,11 @@ try:
             colour_name = check_colours(colours) if colours else None
 
             # piggyback colour read and victime dection on LIDAR interval
-        print(f"Heading: {heading} \t Distances: {distance} \t Color: {colour_name} \t Victim: {victiem_found} \t Unexplorded Nodes: {unexplored_nodes}")
+        print(f"Heading: {heading} \t Distances: {distance}")# \t Color: {colour_name} \t Victim: {victiem_found} \t Unexplorded Nodes: {unexplored_nodes}")
 
         if victiem_found == True:
             unexplored_nodes = []
+
 	# the motors will be turned off if the button is presses 
 
         if not motors_running:
@@ -667,7 +682,7 @@ try:
             turn_to_angle(target_angles[direction_facing], heading)
             search_state = SearchStates.DISCOVER_NODES
 		
-            #if get_person():
+            #get_person():
             #    print("persin fuond")
 		# becase the victem dection is handled by the MV camera? the robot only knows if somethng has been found and the rules state the robot needs to stop for 5 seconds if something is found, i chose 6 seconds to make sure the judge can see its 5 seconds  
                 #time.sleep(6)
@@ -728,6 +743,7 @@ try:
                 # store tile offset as 1 tile forward (target) by default
                 desired_tiles_forward = 1
                 desired_front = distance[0]
+                desired_back = distance[4]
                 search_state = SearchStates.MOVE_NODE
 	
 	# once it is facing the correct directoin it moves one square forwards, this also handles the chance of driving onto a death square where it is labled "blocked"
@@ -752,7 +768,7 @@ try:
                 continue
 
             # attempt to move forward one tile (target tile offset = 1)
-            reached = move_to_next_tile(distance, 1, desired_front, new_facing)
+            reached = move_to_next_tile(distance, 1, desired_front, new_facing, desired_back)
             if reached:
                 # update position
                 current_node = target_path[path_idx]
